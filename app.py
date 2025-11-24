@@ -3,9 +3,10 @@ from functools import lru_cache
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from dash import Dash, dcc, html, Input, Output
+from dash import Dash, dcc, html, Input, Output, State, ALL
 from urllib.parse import quote_plus
 import os
+from dash.exceptions import PreventUpdate
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 csv_path = os.path.join(BASE_DIR, "master_merged_equity_list.csv")
@@ -14,27 +15,60 @@ csv_path = os.path.join(BASE_DIR, "master_merged_equity_list.csv")
 # Screener helpers
 # =========================================================
 
+# Global mapping: Ticker -> List of possible Screener codes
+# This will be populated from CSV data
+TICKER_TO_SCREENER_CODES = {}
+
 # Special cases where Screener code is not obvious
+# For BSE stocks, try multiple codes: BSE_CODE, BSE_SYMBOL, or company name variations
+# Note: Most BSE stocks will be handled automatically via CSV data mapping
 SCREENER_SPECIAL = {
-    "RAJESH.BO": "544291",      # Rajesh Power Services (BSE numeric code)
-    # add more overrides here if needed
+    # Format: "TICKER": [list of codes to try in order]
+    # "RAJESH.BO": ["RAJESH", "544291", "RAJESHPOWER"],  # Will be handled by CSV data
+    # add more overrides here if needed for stocks not in CSV
 }
+
+def get_screener_codes_for_ticker(symbol):
+    """
+    Get all possible Screener codes for a ticker symbol.
+    Returns a list of codes to try in order of preference.
+    """
+    # Check special cases first
+    if symbol in SCREENER_SPECIAL:
+        special_codes = SCREENER_SPECIAL[symbol]
+        # Handle both list and single string formats
+        if isinstance(special_codes, list):
+            return special_codes
+        else:
+            return [special_codes]
+    
+    # Check if we have a mapping from CSV data
+    if symbol in TICKER_TO_SCREENER_CODES:
+        return TICKER_TO_SCREENER_CODES[symbol]
+    
+    # Fallback: try to extract code from ticker
+    codes = []
+    if symbol and symbol.endswith(".NS"):
+        codes.append(symbol[:-3])  # NSE symbol
+    elif symbol and symbol.endswith(".BO"):
+        if symbol[:-3].isdigit():
+            codes.append(symbol[:-3])  # BSE numeric code
+        else:
+            codes.append(symbol[:-3])  # BSE symbol
+    elif symbol and "." in symbol:
+        codes.append(symbol.split(".")[0])
+    else:
+        codes.append(symbol)
+    
+    return codes if codes else [None]
 
 def ticker_to_screener_code(symbol):
     """
     Convert a yfinance-style ticker to Screener company code.
-    Works for most NSE tickers, plus special mapping for tricky ones.
+    Returns the first/preferred code (usually NSE symbol).
     """
-    if symbol in SCREENER_SPECIAL:
-        return SCREENER_SPECIAL[symbol]
-    if symbol and symbol.endswith(".NS"):
-        return symbol[:-3]
-    if symbol and symbol.endswith(".BO") and symbol[:-3].isdigit():
-        # example: "500325.BO" -> "500325"
-        return symbol[:-3]
-    if symbol and "." in symbol:
-        return symbol.split(".")[0]
-    return symbol or None
+    codes = get_screener_codes_for_ticker(symbol)
+    return codes[0] if codes else None
 
 def screener_base(code):
     return f"https://www.screener.in/company/{code}/"
@@ -43,38 +77,60 @@ def screener_base(code):
 def fetch_screener_html(symbol):
     """
     Download Screener consolidated page HTML for a symbol.
+    Tries multiple possible codes (NSE symbol, BSE symbol, BSE code) until one works.
     Cached to avoid repeated network calls.
     """
-    code = ticker_to_screener_code(symbol)
-    if not code:
+    codes = get_screener_codes_for_ticker(symbol)
+    if not codes or codes[0] is None:
         print(f"DEBUG: Could not convert {symbol} to Screener code")
         return None
-    url = screener_base(code) + "consolidated/"
+    
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 404:
-            # Try non-consolidated URL as fallback
-            url_fallback = screener_base(code)
-            resp_fallback = requests.get(url_fallback, headers=headers, timeout=15)
-            if resp_fallback.status_code == 200:
-                return resp_fallback.text
-            print(f"DEBUG: {symbol} ({code}) not found on Screener.in (404). URL: {url}")
-            return None
-        elif resp.status_code != 200:
-            print(f"DEBUG: Failed to fetch {symbol} -> {code}. Status: {resp.status_code}, URL: {url}")
-            return None
-        # Check if page contains error message
-        if "not found" in resp.text.lower() or "404" in resp.text.lower():
-            print(f"DEBUG: {symbol} ({code}) page indicates not found. URL: {url}")
-            return None
-        return resp.text
-    except requests.exceptions.Timeout:
-        print(f"DEBUG: Timeout fetching {symbol} -> {code}")
-        return None
-    except Exception as e:
-        print(f"DEBUG: Exception fetching {symbol} -> {code}: {type(e).__name__}: {e}")
-        return None
+    
+    # Try each code in order
+    for code in codes:
+        if not code:
+            continue
+            
+        # Try consolidated URL first
+        url = screener_base(code) + "consolidated/"
+        try:
+            resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            if resp.status_code == 200:
+                # Check if page contains error message or redirect
+                resp_text_lower = resp.text.lower()
+                if ("not found" in resp_text_lower or "404" in resp_text_lower or 
+                    "page not found" in resp_text_lower or "does not exist" in resp_text_lower):
+                    print(f"DEBUG: {symbol} -> {code}: Page indicates not found (200 but error message)")
+                    continue  # Try next code
+                # Check if final URL was redirected to 404 page
+                if "404" in resp.url.lower() or "not-found" in resp.url.lower():
+                    print(f"DEBUG: {symbol} -> {code}: Redirected to 404 page")
+                    continue  # Try next code
+                return resp.text
+            elif resp.status_code == 404:
+                # Try non-consolidated URL as fallback
+                url_fallback = screener_base(code)
+                resp_fallback = requests.get(url_fallback, headers=headers, timeout=15, allow_redirects=True)
+                if resp_fallback.status_code == 200:
+                    # Check for error messages
+                    if "not found" not in resp_fallback.text.lower() and "404" not in resp_fallback.text.lower():
+                        return resp_fallback.text
+                print(f"DEBUG: {symbol} -> {code}: Both URLs returned 404 or error")
+                continue  # Try next code
+            else:
+                print(f"DEBUG: {symbol} -> {code}: HTTP {resp.status_code}")
+                continue  # Try next code
+        except requests.exceptions.Timeout:
+            print(f"DEBUG: {symbol} -> {code}: Timeout")
+            continue  # Try next code
+        except Exception as e:
+            print(f"DEBUG: {symbol} -> {code}: Exception {type(e).__name__}: {str(e)}")
+            continue  # Try next code
+    
+    # If all codes failed
+    print(f"DEBUG: {symbol} not found on Screener.in. Tried codes: {codes}")
+    return None
 
 def _num(s):
     if not s:
@@ -396,6 +452,50 @@ def card(children, style=None):
     return html.Div(children, style=base_style)
 
 app = Dash(__name__)
+server = app.server
+
+# Helper to create a stock dropdown (used when user clicks + add button)
+def make_stock_dropdown(index):
+    return html.Div(
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "backgroundColor": "#fff",
+            "border": "1px solid #ddd",
+            "borderRadius": "4px",
+            "padding": "4px",
+            "marginRight": "10px",
+            "marginBottom": "8px",
+        },
+        children=[
+            dcc.Dropdown(
+                id={"type": "stock-dropdown", "index": index},
+                options=dropdown_options,
+                value=None,
+                placeholder="Select stock...",
+                style={
+                    "width": "400px",
+                    "border": "none",
+                },
+            ),
+            html.Button(
+                "✕",
+                id={"type": "remove-stock-btn", "index": index},
+                n_clicks=0,
+                style={
+                    "backgroundColor": "transparent",
+                    "border": "none",
+                    "color": "#ff4d4f",
+                    "cursor": "pointer",
+                    "fontSize": "16px",
+                    "fontWeight": "bold",
+                    "marginLeft": "4px",
+                    "padding": "0 6px",
+                },
+                title="Remove stock",
+            ),
+        ],
+    )
 
 # =========================================================
 # 🔹 Load master list of all listed companies for dropdown
@@ -469,7 +569,7 @@ try:
         ticker_col = 'Ticker'
         name_col = 'CompanyName'
     else:
-        # Rename columns to standard names for easier use
+        # Rename columns to standard names for easier use (but keep all original columns for mapping)
         if ticker_col != 'Ticker':
             print(f"DEBUG: Renaming '{ticker_col}' to 'Ticker'")
             master_df = master_df.rename(columns={ticker_col: 'Ticker'})
@@ -481,7 +581,14 @@ try:
         print(f"DEBUG: After renaming, columns: {list(master_df.columns)}")
         print(f"DEBUG: Sample data (first 3 rows):")
         if not master_df.empty:
-            print(master_df[['Ticker', 'CompanyName']].head(3).to_string())
+            cols_to_show = ['Ticker', 'CompanyName']
+            if 'NSE_SYMBOL' in master_df.columns:
+                cols_to_show.append('NSE_SYMBOL')
+            if 'BSE_SYMBOL' in master_df.columns:
+                cols_to_show.append('BSE_SYMBOL')
+            if 'BSE_CODE' in master_df.columns:
+                cols_to_show.append('BSE_CODE')
+            print(master_df[cols_to_show].head(3).to_string())
     
     # Keep only rows that actually have Ticker + CompanyName
     if not master_df.empty and 'Ticker' in master_df.columns and 'CompanyName' in master_df.columns:
@@ -490,6 +597,59 @@ try:
             master_df["Ticker"].notna() & master_df["CompanyName"].notna()
         ].copy()
         print(f"DEBUG: Rows after filtering (non-null Ticker and CompanyName): {len(master_df)}")
+        
+        # Build ticker -> Screener codes mapping from CSV data
+        # Prefer NSE_SYMBOL, then BSE_SYMBOL, then BSE_CODE
+        TICKER_TO_SCREENER_CODES.clear()  # Clear existing mappings
+        
+        for _, row in master_df.iterrows():
+            ticker = row['Ticker']
+            codes = []
+            
+            # Check for NSE_SYMBOL (preferred)
+            if 'NSE_SYMBOL' in master_df.columns and pd.notna(row.get('NSE_SYMBOL', None)):
+                nse_sym = str(row['NSE_SYMBOL']).strip()
+                if nse_sym and nse_sym != 'nan':
+                    codes.append(nse_sym)
+            
+            # Check for BSE_SYMBOL (prioritize for BSE-only stocks)
+            if 'BSE_SYMBOL' in master_df.columns and pd.notna(row.get('BSE_SYMBOL', None)):
+                bse_sym = str(row['BSE_SYMBOL']).strip()
+                if bse_sym and bse_sym != 'nan':
+                    # For BSE-only stocks (.BO), prioritize BSE_SYMBOL over NSE_SYMBOL
+                    if ticker and ticker.endswith('.BO'):
+                        codes.insert(0, bse_sym) if codes else codes.append(bse_sym)
+                    else:
+                        codes.append(bse_sym)
+            
+            # Check for BSE_CODE (numeric, try for BSE stocks)
+            if 'BSE_CODE' in master_df.columns and pd.notna(row.get('BSE_CODE', None)):
+                bse_code = str(row['BSE_CODE']).strip()
+                # Handle float values like 544291.0 -> 544291
+                if '.' in bse_code:
+                    bse_code = bse_code.split('.')[0]
+                if bse_code and bse_code != 'nan' and bse_code.isdigit():
+                    codes.append(bse_code)
+            
+            # Fallback: extract from Ticker itself
+            if not codes:
+                if ticker and ticker.endswith(".NS"):
+                    codes.append(ticker[:-3])
+                elif ticker and ticker.endswith(".BO"):
+                    codes.append(ticker[:-3])
+                elif ticker and "." in ticker:
+                    codes.append(ticker.split(".")[0])
+                else:
+                    codes.append(ticker)
+            
+            if codes:
+                TICKER_TO_SCREENER_CODES[ticker] = codes
+        
+        print(f"DEBUG: Created mapping for {len(TICKER_TO_SCREENER_CODES)} tickers")
+        # Show a few examples
+        sample_tickers = list(TICKER_TO_SCREENER_CODES.keys())[:3]
+        for ticker in sample_tickers:
+            print(f"DEBUG: {ticker} -> {TICKER_TO_SCREENER_CODES[ticker]}")
     else:
         print(f"DEBUG: Missing required columns. Available: {list(master_df.columns)}")
         master_df = pd.DataFrame(columns=['Ticker', 'CompanyName'])
@@ -545,7 +705,7 @@ app.layout = html.Div(
                 html.Div(
                     [
                         html.Span(
-                            " Fundamental & Financials Dashboard",
+                            "Screener Fundamental & Financials Dashboard",
                             style={"fontSize": "22px", "fontWeight": "600"},
                         ),
                         html.Span(
@@ -567,20 +727,43 @@ app.layout = html.Div(
                 card(
                     children=[
                         html.Div("Select Stocks", style={"fontWeight": "600", "marginBottom": "6px"}),
-                        dcc.Dropdown(
-                            id="stock-dropdown",
-                            options=dropdown_options,
-                            # default: first two tickers from your master file (if available)
-                            value=[opt["value"] for opt in dropdown_options[:2]] if len(dropdown_options) >= 2 else (dropdown_options[0]["value"] if len(dropdown_options) == 1 else None),
-                            multi=True,
-                            placeholder="Search or select stocks..." if dropdown_options else "No stocks available. Please check your CSV file.",
+                        html.Div(
+                            style={
+                                "display": "flex",
+                                "flexWrap": "wrap",
+                                "alignItems": "center",
+                                "gap": "10px",
+                            },
+                            children=[
+                                html.Div(
+                                    id="stock-dropdowns-wrapper",
+                                    style={"display": "contents"},
+                                    children=[make_stock_dropdown(0)],
+                                ),
+                                html.Button(
+                                    "＋ Add stock",
+                                    id="add-stock-btn",
+                                    n_clicks=0,
+                                    style={
+                                        "backgroundColor": THEME["primary"],
+                                        "color": "white",
+                                        "border": "none",
+                                        "borderRadius": "20px",
+                                        "padding": "6px 14px",
+                                        "cursor": "pointer",
+                                        "fontSize": "12px",
+                                        "height": "32px",
+                                        "marginBottom": "8px",
+                                    },
+                                ),
+                            ],
                         ),
                         html.Div(
-                            "Select 1 or more stocks to pull  data into the dashboard.",
+                            "Select 1 or more stocks to pull Screener data into the dashboard.",
                             style={
                                 "fontSize": "12px",
                                 "color": THEME["muted"],
-                                "marginTop": "8px",
+                                "marginTop": "4px",
                             },
                         ),
                     ]
@@ -757,6 +940,82 @@ def df_to_dash_table(df, max_cols=None):
 # Callback: build all sections
 # =========================================================
 
+from dash import callback_context
+
+@app.callback(
+    Output("stock-dropdowns-wrapper", "children"),
+    [Input("add-stock-btn", "n_clicks"),
+     Input({"type": "remove-stock-btn", "index": ALL}, "n_clicks")],
+    State("stock-dropdowns-wrapper", "children"),
+    prevent_initial_call=True,
+)
+def manage_stock_dropdowns(add_clicks, remove_clicks, existing_children):
+    ctx = callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    # Handle Add Button
+    if triggered_id == "add-stock-btn":
+        if existing_children is None:
+            existing_children = []
+        # Find the max index to ensure unique IDs
+        new_index = 0
+        if existing_children:
+            # Extract indices from existing children to find max
+            # This is a bit hacky but works for simple lists
+            new_index = len(existing_children) + int(str(add_clicks) if add_clicks else 0) # simple increment
+            # A better way is to rely on the length if we don't care about stable IDs for *removed* items re-appearing
+            # But for simplicity, just len + random or timestamp is safer, but here len is fine if we don't rely on persistence too much.
+            # Let's just use a counter based on length + n_clicks to avoid collision if possible, or just uuid.
+            # For this simple app, len + n_clicks is "unique enough" for new items.
+            import time
+            new_index = int(time.time() * 1000)
+
+        existing_children.append(make_stock_dropdown(new_index))
+        return existing_children
+
+    # Handle Remove Button
+    # triggered_id will be a JSON string like '{"index":0,"type":"remove-stock-btn"}'
+    import json
+    try:
+        button_id = json.loads(triggered_id)
+        if button_id.get("type") == "remove-stock-btn":
+            index_to_remove = button_id["index"]
+            
+            # Filter out the child with the matching index
+            # We need to inspect the children structure. 
+            # Each child is a Div -> children[1] is the button -> id has index
+            
+            new_children = []
+            for child in existing_children:
+                # child['props']['children'][1]['props']['id']['index']
+                try:
+                    # Dash component structure as dict
+                    # The button is the second child (index 1)
+                    btn_id = child['props']['children'][1]['props']['id']
+                    if btn_id['index'] != index_to_remove:
+                        new_children.append(child)
+                except Exception:
+                    # If structure doesn't match, keep it to be safe
+                    new_children.append(child)
+            
+            # If all removed, maybe keep one? Or allow empty.
+            if not new_children:
+                # Optional: Always keep at least one
+                # new_children.append(make_stock_dropdown(0))
+                pass
+                
+            return new_children
+            
+    except Exception as e:
+        print(f"Error parsing trigger: {e}")
+        raise PreventUpdate
+
+    raise PreventUpdate
+
+
 @app.callback(
     [
         Output("metrics-table", "children"),
@@ -767,9 +1026,16 @@ def df_to_dash_table(df, max_cols=None):
         Output("ann-section", "children"),
         Output("invalid-tickers", "children"),
     ],
-    [Input("stock-dropdown", "value")],
+    Input({"type": "stock-dropdown", "index": ALL}, "value"),
 )
-def update_dashboard(selected_symbols):
+def update_dashboard(selected_dropdown_values):
+    # Convert dropdown values (list) to unique list of tickers
+    selected_symbols = []
+    if selected_dropdown_values:
+        for val in selected_dropdown_values:
+            if val and val not in selected_symbols:
+                selected_symbols.append(val)
+
     if not selected_symbols:
         return (
             html.Div("Please select at least one stock."),
@@ -930,8 +1196,8 @@ def update_dashboard(selected_symbols):
         "52-Week Low",
         "Sales YoY %",
         "Net Profit YoY %",
-        " Company Page",
-        " Balance Sheet",
+        "Screener Company Page",
+        "Screener Balance Sheet",
     ]
 
     headers = ["Metric"] + [
@@ -943,10 +1209,18 @@ def update_dashboard(selected_symbols):
         row_cells = [metric]
         for stock_row in metrics_data:
             val = stock_row.get(metric, "N/A")
-            if metric in [" Company Page", " Balance Sheet"]:
-                if isinstance(val, str):
-                    label = "Open " if "Company" in metric else "Open Balance Sheet"
-                    val = html.A(label, href=val, target="_blank")
+            if metric in ["Screener Company Page", "Screener Balance Sheet"]:
+                if isinstance(val, str) and val != "N/A" and val.startswith("http"):
+                    label = "Open Screener" if "Company" in metric else "Open Balance Sheet"
+                    val = html.A(
+                        label, 
+                        href=val, 
+                        target="_blank",
+                        style={
+                            "color": "#1a0dab",
+                            "textDecoration": "underline",
+                        }
+                    )
                 else:
                     val = "N/A"
             row_cells.append(val)
