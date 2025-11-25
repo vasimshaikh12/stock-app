@@ -99,8 +99,8 @@ def fetch_screener_html(symbol):
             if resp.status_code == 200:
                 # Check if page contains error message or redirect
                 resp_text_lower = resp.text.lower()
-                if ("not found" in resp_text_lower or "404" in resp_text_lower or 
-                    "page not found" in resp_text_lower or "does not exist" in resp_text_lower):
+                # Only check for specific error phrases to avoid false positives
+                if ("page not found" in resp_text_lower or "does not exist" in resp_text_lower):
                     print(f"DEBUG: {symbol} -> {code}: Page indicates not found (200 but error message)")
                     continue  # Try next code
                 # Check if final URL was redirected to 404 page
@@ -113,8 +113,9 @@ def fetch_screener_html(symbol):
                 url_fallback = screener_base(code)
                 resp_fallback = requests.get(url_fallback, headers=headers, timeout=15, allow_redirects=True)
                 if resp_fallback.status_code == 200:
-                    # Check for error messages
-                    if "not found" not in resp_fallback.text.lower() and "404" not in resp_fallback.text.lower():
+                    # Check for specific error messages only
+                    fallback_text_lower = resp_fallback.text.lower()
+                    if "page not found" not in fallback_text_lower and "does not exist" not in fallback_text_lower:
                         return resp_fallback.text
                 print(f"DEBUG: {symbol} -> {code}: Both URLs returned 404 or error")
                 continue  # Try next code
@@ -153,10 +154,54 @@ def fetch_screener_metrics(symbol):
     Fetch core fundamentals + simple YoY from :
     - Market Cap, Current Price, High/Low, P/E, Book Value, Price/Book,
       Dividend Yield, ROCE, ROE, Face Value, 52W High/Low.
-    - Sales YoY %, Net Profit YoY % (last full year vs previous year).
+    - Sales YoY % (last full year vs previous year).
     """
     html_text = fetch_screener_html(symbol)
+    
+    # Initialize variables for 52-week high/low
+    high_52 = None
+    low_52 = None
+    
     if not html_text:
+        # Try BSE fallback if we have BSE code
+        print(f"DEBUG: Screener failed for {symbol}, trying BSE fallback...")
+        codes = get_screener_codes_for_ticker(symbol)
+        bse_code = None
+        
+        # Look for numeric BSE code in the codes list
+        for code in codes:
+            if code and code.isdigit():
+                bse_code = code
+                break
+        
+        if bse_code:
+            bse_data = fetch_bse_metrics(bse_code)
+            if bse_data:
+                print(f"DEBUG: Got data from BSE for {symbol}")
+                # Return minimal data from BSE
+                code = ticker_to_screener_code(symbol)
+                return {
+                    "Market Cap": "N/A",
+                    "Current Price": bse_data.get("Current Price", "N/A"),
+                    "P/E Ratio": "N/A",
+                    "Book Value": "N/A",
+                    "Price / Book": "N/A",
+                    "Dividend Yield": "N/A",
+                    "ROCE": "N/A",
+                    "ROE": "N/A",
+                    "Face Value": "N/A",
+                    "52-Week High": bse_data.get("52-Week High", "N/A"),
+                    "52-Week Low": bse_data.get("52-Week Low", "N/A"),
+                    "Sales YoY %": "N/A",
+                    "Net Profit YoY %": "N/A",
+                    "Links": {
+                        "Screener": screener_base(code) if code else None,
+                        "Google Finance": f"https://www.google.com/finance/quote/{symbol}:NSE",
+                        "BSE": f"https://www.bseindia.com/stock-share-price/{bse_code}/",
+                    },
+                }
+        
+        # If BSE also fails, return empty
         return {}
 
     soup = BeautifulSoup(html_text, "lxml")
@@ -205,6 +250,20 @@ def fetch_screener_metrics(symbol):
     fv = get_any("Face Value")
     pb_raw = get_any("Price to Book value", "Price to book")
 
+    # ---------- Google Finance Fallback ----------
+    # If key metrics are missing (e.g. Market Cap, Price), try Google Finance
+    if not mcap or not current_price:
+        print(f"DEBUG: Missing key metrics for {symbol}, trying Google Finance fallback...")
+        gf_data = fetch_google_finance_metrics(symbol)
+        if gf_data:
+            if not mcap: mcap = gf_data.get("Market Cap")
+            if not current_price: current_price = gf_data.get("Current Price")
+            if not pe: pe = gf_data.get("P/E Ratio")
+            if not high_52: high_52 = gf_data.get("52-Week High")
+            if not low_52: low_52 = gf_data.get("52-Week Low")
+            # Google Finance doesn't easily give Book Value / ROCE / ROE in the summary, 
+            # but we can at least get price and PE.
+
     # ---------- Price / Book ----------
     pb = pb_raw
     if pb is None:
@@ -214,8 +273,9 @@ def fetch_screener_metrics(symbol):
             pb = f"{cp_num / bv_num:.2f}"
 
     # ---------- 52 week high/low ----------
-    high_52, low_52 = None, None
-    if high_low:
+    # (Existing logic handles Screener format, if GF data is used it might be different, 
+    # but let's assume we parse it cleanly or leave it as is if from Screener)
+    if high_low and not high_52:
         txt = high_low.replace("₹", "")
         parts = txt.split("/")
         if len(parts) == 2:
@@ -270,9 +330,25 @@ def fetch_screener_metrics(symbol):
         return x if x is not None else "N/A"
 
     code = ticker_to_screener_code(symbol)
+    
+    # Generate External Links
+    # MoneyControl: Search URL is usually reliable to find the stock
+    mc_url = f"https://www.moneycontrol.com/india/stockpricequote/{symbol}" 
+    # Actually MC URLs are complex. Best to use their search or a known pattern if possible.
+    # But a search link is safest:
+    mc_search_url = f"https://www.moneycontrol.com/news/business/stocks/{symbol}.html" # Not quite
+    # Let's use Google Search for MoneyControl as a proxy or just the Google Finance link
+    gf_url = f"https://www.google.com/finance/quote/{symbol}:NSE"
+    
+    # Try to construct a decent MoneyControl link. 
+    # Often it's difficult without the specific MC ID. 
+    # We will use a Google Search link for MoneyControl as a fallback or the generic search.
+    mc_search = f"https://www.moneycontrol.com/mccode/common/autosuggest_search_link.php?search_query={symbol}&classic=true"
+    
     links = {
-        "Screener Company Page": screener_base(code) if code else None,
-        "Screener Balance Sheet": (screener_base(code) + "consolidated/#balance-sheet") if code else None,
+        "Screener": screener_base(code) if code else None,
+        "Google Finance": gf_url,
+        "MoneyControl": mc_search, # This will likely redirect or show search results
     }
 
     return {
@@ -289,9 +365,143 @@ def fetch_screener_metrics(symbol):
         "52-Week Low": nz(low_52),
         "Sales YoY %": pct_fmt(yoy_sales),
         "Net Profit YoY %": pct_fmt(yoy_profit),
-        "Screener Company Page": links.get("Screener Company Page"),
-        "Screener Balance Sheet": links.get("Screener Balance Sheet"),
+        "Links": links, # Return the dictionary of links
     }
+
+def fetch_google_finance_metrics(symbol):
+    """
+    Fallback: Fetch basic metrics from Google Finance.
+    """
+    try:
+        # Try NSE first
+        url = f"https://www.google.com/finance/quote/{symbol}:NSE"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        
+        if resp.status_code != 200:
+            # Try BSE
+            url = f"https://www.google.com/finance/quote/{symbol}:BOM"
+            resp = requests.get(url, headers=headers, timeout=10)
+            
+        if resp.status_code != 200:
+            return None
+            
+        soup = BeautifulSoup(resp.text, "lxml")
+        
+        # Google Finance classes change, but often they use specific structures.
+        # We can look for text labels.
+        
+        data = {}
+        
+        # Helper to find value by label
+        def find_val(label):
+            # Look for a div containing the label, then find the sibling or child with value
+            # This is tricky as structure varies. 
+            # Strategy: Find text, go up to parent, find next sibling or specific class.
+            try:
+                # Common pattern in GF: <div class="gyFHrc"><div class="mfs7Fc">Market cap</div><div class="P6K39c">18.50T</div></div>
+                # We look for the label text
+                elem = soup.find(string=re.compile(f"^{label}", re.I))
+                if elem:
+                    # Go up to the container
+                    parent = elem.parent
+                    # Usually the value is in a sibling or the next div
+                    # Try next sibling
+                    val_div = parent.find_next_sibling("div")
+                    if val_div:
+                        return val_div.get_text(strip=True)
+                    
+                    # Or sometimes it's up another level
+                    grandparent = parent.parent
+                    val_div = grandparent.find("div", class_=re.compile("P6K39c|YMlKec")) # Common classes
+                    if val_div:
+                        return val_div.get_text(strip=True)
+            except:
+                pass
+            return None
+
+        # Current Price
+        # Usually in a large font class "YMlKec fxKbKc"
+        price_div = soup.find("div", class_="YMlKec fxKbKc")
+        if price_div:
+            data["Current Price"] = price_div.get_text(strip=True).replace("₹", "")
+            
+        data["Market Cap"] = find_val("Market cap")
+        data["P/E Ratio"] = find_val("P/E ratio")
+        data["52-Week High"] = find_val("52-wk high")
+        data["52-Week Low"] = find_val("52-wk low")
+        
+        # Clean up
+        for k, v in data.items():
+            if v:
+                data[k] = v.replace("₹", "").strip()
+                
+        return data
+        
+    except Exception as e:
+        print(f"Error fetching Google Finance data for {symbol}: {e}")
+        return None
+
+def fetch_bse_metrics(bse_code, symbol_name=""):
+    """
+    Fallback: Fetch basic metrics from BSE website.
+    BSE code should be the numeric code (e.g., 544291).
+    """
+    try:
+        # BSE stock quote page
+        # Format: https://www.bseindia.com/stock-share-price/company-name/SYMBOL/CODE/
+        # We'll try the API endpoint that BSE uses
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://www.bseindia.com/"
+        }
+        
+        # Try BSE's stock quote API
+        api_url = f"https://api.bseindia.com/BseIndiaAPI/api/StockReachGraph/w?scripcode={bse_code}&flag=0&fromdate=&todate=&seriesid="
+        
+        resp = requests.get(api_url, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            try:
+                data_json = resp.json()
+                if data_json and len(data_json) > 0:
+                    latest = data_json[0]
+                    
+                    result = {}
+                    # Map BSE fields to our format
+                    if 'CurrRate' in latest:
+                        result['Current Price'] = str(latest['CurrRate'])
+                    if 'High' in latest:
+                        result['52-Week High'] = str(latest['High'])
+                    if 'Low' in latest:
+                        result['52-Week Low'] = str(latest['Low'])
+                    
+                    return result if result else None
+            except:
+                pass
+        
+        # Alternative: Try the main stock page and scrape
+        # This is less reliable but can work as last resort
+        stock_url = f"https://www.bseindia.com/stock-share-price/{bse_code}/"
+        resp = requests.get(stock_url, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "lxml")
+            result = {}
+            
+            # Try to find price - BSE uses various formats
+            # Look for elements with specific IDs or classes
+            price_elem = soup.find("span", {"id": "idcrval"}) or soup.find("strong", {"id": "idcrval"})
+            if price_elem:
+                result['Current Price'] = price_elem.get_text(strip=True).replace(',', '')
+            
+            return result if result else None
+            
+    except Exception as e:
+        print(f"Error fetching BSE data for code {bse_code}: {e}")
+        return None
+
 
 # =========================================================
 # Section parsers: P&L, Balance Sheet, Cash Flows, Shareholding, Announcements
@@ -612,17 +822,7 @@ try:
                 if nse_sym and nse_sym != 'nan':
                     codes.append(nse_sym)
             
-            # Check for BSE_SYMBOL (prioritize for BSE-only stocks)
-            if 'BSE_SYMBOL' in master_df.columns and pd.notna(row.get('BSE_SYMBOL', None)):
-                bse_sym = str(row['BSE_SYMBOL']).strip()
-                if bse_sym and bse_sym != 'nan':
-                    # For BSE-only stocks (.BO), prioritize BSE_SYMBOL over NSE_SYMBOL
-                    if ticker and ticker.endswith('.BO'):
-                        codes.insert(0, bse_sym) if codes else codes.append(bse_sym)
-                    else:
-                        codes.append(bse_sym)
-            
-            # Check for BSE_CODE (numeric, try for BSE stocks)
+            # Check for BSE_CODE (numeric, reliable for BSE stocks)
             if 'BSE_CODE' in master_df.columns and pd.notna(row.get('BSE_CODE', None)):
                 bse_code = str(row['BSE_CODE']).strip()
                 # Handle float values like 544291.0 -> 544291
@@ -630,6 +830,12 @@ try:
                     bse_code = bse_code.split('.')[0]
                 if bse_code and bse_code != 'nan' and bse_code.isdigit():
                     codes.append(bse_code)
+
+            # Check for BSE_SYMBOL (fallback if code fails)
+            if 'BSE_SYMBOL' in master_df.columns and pd.notna(row.get('BSE_SYMBOL', None)):
+                bse_sym = str(row['BSE_SYMBOL']).strip()
+                if bse_sym and bse_sym != 'nan':
+                    codes.append(bse_sym)
             
             # Fallback: extract from Ticker itself
             if not codes:
@@ -1182,94 +1388,62 @@ def update_dashboard(selected_dropdown_values):
         )
 
     # ------- build metrics comparison table -------
-    metric_keys = [
-        "Market Cap",
-        "Current Price",
-        "P/E Ratio",
-        "Book Value",
-        "Price / Book",
-        "Dividend Yield",
-        "ROCE",
-        "ROE",
-        "Face Value",
-        "52-Week High",
-        "52-Week Low",
-        "Sales YoY %",
-        "Net Profit YoY %",
-        "Screener Company Page",
-        "Screener Balance Sheet",
+    # Create metrics table
+    # We want to show metrics side-by-side for each stock
+    # Transpose the data: Rows = Metrics, Cols = Stocks
+    
+    if not metrics_data:
+        metrics_table = html.Div("No metrics available.")
+        
+    # Extract all unique keys (metrics)
+    all_metrics = [
+        "Market Cap", "Current Price", "P/E Ratio", "Book Value", 
+        "Price / Book", "Dividend Yield", "ROCE", "ROE", 
+        "Face Value", "52-Week High", "52-Week Low", 
+        "Sales YoY %", "Net Profit YoY %"
     ]
-
-    headers = ["Metric"] + [
-        f"{row['Name']} ({row['Symbol']})" for row in metrics_data
-    ]
-
-    body_rows = []
-    for metric in metric_keys:
-        row_cells = [metric]
-        for stock_row in metrics_data:
-            val = stock_row.get(metric, "N/A")
-            if metric in ["Screener Company Page", "Screener Balance Sheet"]:
-                if isinstance(val, str) and val != "N/A" and val.startswith("http"):
-                    label = "Open Screener" if "Company" in metric else "Open Balance Sheet"
-                    val = html.A(
-                        label, 
-                        href=val, 
-                        target="_blank",
-                        style={
-                            "color": "#1a0dab",
-                            "textDecoration": "underline",
-                        }
-                    )
-                else:
-                    val = "N/A"
-            row_cells.append(val)
-        body_rows.append(row_cells)
+    
+    # Build header row
+    header = [html.Th("Metric", style={"textAlign": "left", "padding": "8px", "backgroundColor": "#f2f6fb"})]
+    for d in metrics_data:
+        header.append(html.Th(d["Symbol"], style={"textAlign": "left", "padding": "8px", "backgroundColor": "#f2f6fb"}))
+        
+    rows = []
+    for m in all_metrics:
+        cells = [html.Td(m, style={"fontWeight": "500", "padding": "6px 8px", "borderBottom": "1px solid #eee"})]
+        for d in metrics_data:
+            val = d.get(m, "N/A")
+            cells.append(html.Td(val, style={"padding": "6px 8px", "borderBottom": "1px solid #eee"}))
+        rows.append(html.Tr(cells))
+        
+    # Add "External Links" row
+    link_cells = [html.Td("External Links", style={"fontWeight": "500", "padding": "6px 8px", "borderBottom": "1px solid #eee"})]
+    for d in metrics_data:
+        links = {
+            "Screener": d.get("Screener Company Page"),
+            "Google Finance": d.get("Google Finance Link"), # Assuming this key exists or will be added
+            "MoneyControl": d.get("MoneyControl Link") # Assuming this key exists or will be added
+        }
+        buttons = []
+        
+        if links.get("Screener"):
+            buttons.append(html.A("Screener", href=links["Screener"], target="_blank", style={"marginRight": "8px", "color": THEME["primary"], "fontSize": "11px", "textDecoration": "none", "border": "1px solid " + THEME["primary"], "padding": "2px 6px", "borderRadius": "4px"}))
+            
+        if links.get("Google Finance"):
+            buttons.append(html.A("Google", href=links["Google Finance"], target="_blank", style={"marginRight": "8px", "color": "#ea4335", "fontSize": "11px", "textDecoration": "none", "border": "1px solid #ea4335", "padding": "2px 6px", "borderRadius": "4px"}))
+            
+        if links.get("MoneyControl"):
+            buttons.append(html.A("MoneyControl", href=links["MoneyControl"], target="_blank", style={"color": "#28a745", "fontSize": "11px", "textDecoration": "none", "border": "1px solid #28a745", "padding": "2px 6px", "borderRadius": "4px"}))
+            
+        link_cells.append(html.Td(buttons, style={"padding": "6px 8px", "borderBottom": "1px solid #eee"}))
+    rows.append(html.Tr(link_cells))
 
     metrics_table = html.Table(
-        style={
-            "width": "100%",
-            "borderCollapse": "collapse",
-            "fontSize": "13px",
-        },
         children=[
-            html.Thead(
-                html.Tr(
-                    [
-                        html.Th(
-                            h,
-                            style={
-                                "borderBottom": f"2px solid {THEME['border']}",
-                                "textAlign": "left",
-                                "padding": "6px 8px",
-                                "backgroundColor": "#f2f6fb",
-                                "fontWeight": "600",
-                            },
-                        )
-                        for h in headers
-                    ]
-                )
-            ),
-            html.Tbody(
-                [
-                    html.Tr(
-                        [
-                            html.Td(
-                                cell,
-                                style={
-                                    "borderBottom": f"1px solid {THEME['border']}",
-                                    "padding": "5px 8px",
-                                    "fontWeight": "600" if j == 0 else "400",
-                                    "whiteSpace": "nowrap" if j == 0 else "normal",
-                                },
-                            )
-                            for j, cell in enumerate(row)
-                        ]
-                    )
-                    for row in body_rows
-                ]
-            ),
+            html.Thead(html.Tr(header)),
+            html.Tbody(rows)
         ],
+        style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"}
     )
 
     warn = ""
