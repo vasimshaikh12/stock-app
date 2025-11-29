@@ -7,6 +7,7 @@ from dash import Dash, dcc, html, Input, Output, State, ALL
 from urllib.parse import quote_plus
 import os
 from dash.exceptions import PreventUpdate
+from groq_chatbot import GroqChatbot
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 csv_path = os.path.join(BASE_DIR, "master_merged_equity_list.csv")
@@ -664,6 +665,10 @@ def card(children, style=None):
 app = Dash(__name__)
 server = app.server
 
+# Initialize Groq Chatbot
+GROQ_API_KEY = "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"
+chatbot = GroqChatbot(GROQ_API_KEY)
+
 # Helper to create a stock dropdown (used when user clicks + add button)
 def make_stock_dropdown(index):
     return html.Div(
@@ -921,7 +926,7 @@ app.layout = html.Div(
                     ]
                 ),
                 html.Span(
-                    "For educational / analysis use",
+                    f"v2.1 | Loaded {len(dropdown_options)} stocks",
                     style={"fontSize": "12px", "opacity": 0.8},
                 ),
             ],
@@ -1080,6 +1085,227 @@ app.layout = html.Div(
                 ),
             ],
         ),
+        # Chatbot UI Components
+        # Floating chat button
+        html.Div(
+            id="chat-button",
+            children="💬",
+            n_clicks=0,
+            style={
+                "position": "fixed",
+                "bottom": "20px",
+                "right": "20px",
+                "width": "60px",
+                "height": "60px",
+                "borderRadius": "50%",
+                "backgroundColor": "#25D366",
+                "color": "white",
+                "fontSize": "28px",
+                "display": "flex",
+                "alignItems": "center",
+                "justifyContent": "center",
+                "cursor": "pointer",
+                "boxShadow": "0 4px 12px rgba(0,0,0,0.15)",
+                "zIndex": "1000",
+                "transition": "all 0.3s ease",
+            },
+        ),
+        # Chat panel (hidden by default)
+        html.Div(
+            id="chat-panel",
+            style={
+                "position": "fixed",
+                "bottom": "90px",
+                "right": "20px",
+                "width": "400px",
+                "height": "600px",
+                "backgroundColor": "white",
+                "borderRadius": "12px",
+                "boxShadow": "0 8px 24px rgba(0,0,0,0.2)",
+                "display": "none",
+                "flexDirection": "column",
+                "zIndex": "999",
+                "overflow": "hidden",
+            },
+            children=[
+                # Chat header
+                html.Div(
+                    style={
+                        "background": f"linear-gradient(135deg, {THEME['primary']} 0%, {THEME['accent']} 100%)",
+                        "color": "white",
+                        "padding": "18px 20px",
+                        "fontWeight": "600",
+                        "fontSize": "17px",
+                        "display": "flex",
+                        "justifyContent": "space-between",
+                        "alignItems": "center",
+                        "boxShadow": "0 2px 8px rgba(0,0,0,0.1)",
+                    },
+                    children=[
+                        html.Span("📈 Stock Market Assistant", style={"letterSpacing": "0.3px"}),
+                        html.Div(
+                            "✕",
+                            id="close-chat",
+                            n_clicks=0,
+                            style={
+                                "cursor": "pointer",
+                                "fontSize": "22px",
+                                "fontWeight": "bold",
+                                "width": "28px",
+                                "height": "28px",
+                                "display": "flex",
+                                "alignItems": "center",
+                                "justifyContent": "center",
+                                "borderRadius": "50%",
+                                "transition": "background-color 0.2s ease",
+                            },
+                        ),
+                    ],
+                ),
+                # Chat messages area
+                html.Div(
+                    id="chat-messages",
+                    style={
+                        "flex": "1",
+                        "overflowY": "auto",
+                        "padding": "16px",
+                        "backgroundColor": "#f8f9fa",
+                    },
+                    children=[\
+                        html.Div(
+                            [
+                                # Welcome message
+                                html.Div(
+                                    "👋 Hello! I'm your AI stock market assistant. Ask me about stocks, comparisons, or investment strategies!",
+                                    style={
+                                        "backgroundColor": "#ffffff",
+                                        "padding": "12px 16px",
+                                        "borderRadius": "16px",
+                                        "marginBottom": "12px",
+                                        "maxWidth": "85%",
+                                        "fontSize": "14px",
+                                        "lineHeight": "1.5",
+                                        "boxShadow": "0 2px 4px rgba(0,0,0,0.08)",
+                                        "border": "1px solid #e9ecef",
+                                    },
+                                ),
+                                # Quick action buttons
+                                html.Div(
+                                    [
+                                        html.Div(
+                                            "Quick questions:",
+                                            style={
+                                                "fontSize": "11px",
+                                                "color": "#6c757d",
+                                                "marginBottom": "8px",
+                                                "fontWeight": "500",
+                                            },
+                                        ),
+                                        html.Button(
+                                            "Which stock is better for long-term?",
+                                            id={"type": "quick-question", "index": 0},
+                                            n_clicks=0,
+                                            style={
+                                                "backgroundColor": "#ffffff",
+                                                "color": THEME["primary"],
+                                                "border": f"1px solid {THEME['primary']}",
+                                                "borderRadius": "16px",
+                                                "padding": "6px 12px",
+                                                "fontSize": "11px",
+                                                "cursor": "pointer",
+                                                "marginRight": "6px",
+                                                "marginBottom": "6px",
+                                                "display": "inline-block",
+                                                "transition": "all 0.2s ease",
+                                            },
+                                        ),
+                                        html.Button(
+                                            "Compare selected stocks",
+                                            id={"type": "quick-question", "index": 1},
+                                            n_clicks=0,
+                                            style={
+                                                "backgroundColor": "#ffffff",
+                                                "color": THEME["primary"],
+                                                "border": f"1px solid {THEME['primary']}",
+                                                "borderRadius": "16px",
+                                                "padding": "6px 12px",
+                                                "fontSize": "11px",
+                                                "cursor": "pointer",
+                                                "marginRight": "6px",
+                                                "marginBottom": "6px",
+                                                "display": "inline-block",
+                                                "transition": "all 0.2s ease",
+                                            },
+                                        ),
+                                        html.Button(
+                                            "What are the key metrics to consider?",
+                                            id={"type": "quick-question", "index": 2},
+                                            n_clicks=0,
+                                            style={
+                                                "backgroundColor": "#ffffff",
+                                                "color": THEME["primary"],
+                                                "border": f"1px solid {THEME['primary']}",
+                                                "borderRadius": "16px",
+                                                "padding": "6px 12px",
+                                                "fontSize": "11px",
+                                                "cursor": "pointer",
+                                                "marginBottom": "6px",
+                                                "display": "inline-block",
+                                                "transition": "all 0.2s ease",
+                                            },
+                                        ),
+                                    ],
+                                    style={"marginBottom": "10px"},
+                                ),
+                            ]
+                        )
+                    ],
+                ),
+                # Chat input area
+                html.Div(
+                    style={
+                        "padding": "12px",
+                        "borderTop": "1px solid #dee2e6",
+                        "backgroundColor": "white",
+                        "display": "flex",
+                        "gap": "8px",
+                    },
+                    children=[
+                        dcc.Input(
+                            id="chat-input",
+                            type="text",
+                            placeholder="Ask about stocks...",
+                            style={
+                                "flex": "1",
+                                "padding": "10px 12px",
+                                "border": "1px solid #ced4da",
+                                "borderRadius": "20px",
+                                "fontSize": "13px",
+                                "outline": "none",
+                            },
+                            n_submit=0,
+                        ),
+                        html.Button(
+                            "Send",
+                            id="send-chat",
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": THEME["primary"],
+                                "color": "white",
+                                "border": "none",
+                                "borderRadius": "20px",
+                                "padding": "10px 20px",
+                                "cursor": "pointer",
+                                "fontSize": "13px",
+                                "fontWeight": "600",
+                            },
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        # Hidden store for chat state
+        dcc.Store(id="chat-history", data=[]),
     ],
 )
 
@@ -1467,6 +1693,251 @@ def update_dashboard(selected_dropdown_values):
         ann_blocks,
         warn,
     )
+
+# =========================================================
+# Chatbot Callbacks
+# =========================================================
+
+@app.callback(
+    Output("chat-panel", "style"),
+    [Input("chat-button", "n_clicks"),
+     Input("close-chat", "n_clicks")],
+    State("chat-panel", "style"),
+    prevent_initial_call=True,
+)
+def toggle_chat_panel(open_clicks, close_clicks, current_style):
+    """Toggle chat panel visibility"""
+    ctx = callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+    
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    
+    if trigger_id == "chat-button":
+        # Open chat
+        current_style["display"] = "flex"
+    elif trigger_id == "close-chat":
+        # Close chat
+        current_style["display"] = "none"
+    
+    return current_style
+
+
+@app.callback(
+    [Output("chat-messages", "children"),
+     Output("chat-input", "value"),
+     Output("chat-history", "data")],
+    [Input("send-chat", "n_clicks"),
+     Input("chat-input", "n_submit")],
+    [State("chat-input", "value"),
+     State("chat-history", "data"),
+     State({"type": "stock-dropdown", "index": ALL}, "value")],
+    prevent_initial_call=True,
+)
+def handle_chat_message(send_clicks, input_submit, user_message, chat_history, selected_stocks):
+    """Handle user messages and generate AI responses"""
+    if not user_message or user_message.strip() == "":
+        raise PreventUpdate
+    
+    # Get current stock data for context
+    stocks_data = []
+    if selected_stocks:
+        unique_stocks = [s for s in selected_stocks if s]
+        for symbol in unique_stocks:
+            try:
+                metrics = fetch_screener_metrics(symbol)
+                if metrics:
+                    name = ticker_to_name.get(symbol, symbol)
+                    stock_info = {"Name": name, "Symbol": symbol}
+                    stock_info.update(metrics)
+                    stocks_data.append(stock_info)
+            except:
+                pass
+    
+    # Generate AI response
+    try:
+        ai_response = chatbot.generate_response(user_message, stocks_data)
+    except Exception as e:
+        ai_response = f"Sorry, I encountered an error: {str(e)}"
+    
+    # Update chat history
+    if chat_history is None:
+        chat_history = []
+    
+    chat_history.append({"role": "user", "content": user_message})
+    chat_history.append({"role": "assistant", "content": ai_response})
+    
+    # Build message UI
+    messages = [
+        html.Div(
+            [
+                # Welcome message
+                html.Div(
+                    "👋 Hello! I'm your AI stock market assistant. Ask me about stocks, comparisons, or investment strategies!",
+                    style={
+                        "backgroundColor": "#ffffff",
+                        "padding": "12px 16px",
+                        "borderRadius": "16px",
+                        "marginBottom": "12px",
+                        "maxWidth": "85%",
+                        "fontSize": "14px",
+                        "lineHeight": "1.5",
+                        "boxShadow": "0 2px 4px rgba(0,0,0,0.08)",
+                        "border": "1px solid #e9ecef",
+                    },
+                ),
+                # Quick action buttons
+                html.Div(
+                    [
+                        html.Div(
+                            "Quick questions:",
+                            style={
+                                "fontSize": "11px",
+                                "color": "#6c757d",
+                                "marginBottom": "8px",
+                                "fontWeight": "500",
+                            },
+                        ),
+                        html.Button(
+                            "Which stock is better for long-term?",
+                            id={"type": "quick-question", "index": 0},
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": "#ffffff",
+                                "color": THEME["primary"],
+                                "border": f"1px solid {THEME['primary']}",
+                                "borderRadius": "16px",
+                                "padding": "6px 12px",
+                                "fontSize": "11px",
+                                "cursor": "pointer",
+                                "marginRight": "6px",
+                                "marginBottom": "6px",
+                                "display": "inline-block",
+                                "transition": "all 0.2s ease",
+                            },
+                        ),
+                        html.Button(
+                            "Compare selected stocks",
+                            id={"type": "quick-question", "index": 1},
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": "#ffffff",
+                                "color": THEME["primary"],
+                                "border": f"1px solid {THEME['primary']}",
+                                "borderRadius": "16px",
+                                "padding": "6px 12px",
+                                "fontSize": "11px",
+                                "cursor": "pointer",
+                                "marginRight": "6px",
+                                "marginBottom": "6px",
+                                "display": "inline-block",
+                                "transition": "all 0.2s ease",
+                            },
+                        ),
+                        html.Button(
+                            "What are the key metrics to consider?",
+                            id={"type": "quick-question", "index": 2},
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": "#ffffff",
+                                "color": THEME["primary"],
+                                "border": f"1px solid {THEME['primary']}",
+                                "borderRadius": "16px",
+                                "padding": "6px 12px",
+                                "fontSize": "11px",
+                                "cursor": "pointer",
+                                "marginBottom": "6px",
+                                "display": "inline-block",
+                                "transition": "all 0.2s ease",
+                            },
+                        ),
+                    ],
+                    style={"marginBottom": "10px"},
+                ),
+            ]
+        )
+    ]
+    
+    for msg in chat_history:
+        if msg["role"] == "user":
+            messages.append(
+                html.Div(
+                    msg["content"],
+                    style={
+                        "backgroundColor": THEME["primary"],
+                        "color": "white",
+                        "padding": "10px 14px",
+                        "borderRadius": "16px 16px 4px 16px",
+                        "marginBottom": "12px",
+                        "marginLeft": "auto",
+                        "maxWidth": "80%",
+                        "fontSize": "14px",
+                        "lineHeight": "1.5",
+                        "textAlign": "left",
+                        "boxShadow": "0 2px 6px rgba(17, 103, 177, 0.3)",
+                        "wordWrap": "break-word",
+                    },
+                )
+            )
+        else:
+            # Use dcc.Markdown for AI responses to render markdown properly
+            messages.append(
+                html.Div(
+                    dcc.Markdown(
+                        msg["content"],
+                        style={
+                            "margin": "0",
+                            "fontSize": "14px",
+                            "lineHeight": "1.6",
+                            "color": "#212529",
+                        },
+                    ),
+                    style={
+                        "backgroundColor": "#ffffff",
+                        "padding": "12px 16px",
+                        "borderRadius": "16px 16px 16px 4px",
+                        "marginBottom": "12px",
+                        "maxWidth": "85%",
+                        "boxShadow": "0 2px 4px rgba(0,0,0,0.08)",
+                        "border": "1px solid #e9ecef",
+                        "wordWrap": "break-word",
+                    },
+                )
+            )
+    
+    return messages, "", chat_history
+
+
+# Callback to handle quick question buttons
+@app.callback(
+    Output("chat-input", "value", allow_duplicate=True),
+    Input({"type": "quick-question", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def handle_quick_question(n_clicks_list):
+    """Auto-fill chat input when quick question button is clicked"""
+    ctx = callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+    
+    # Get which button was clicked
+    trigger = ctx.triggered[0]
+    if not trigger["value"]:  # No actual click
+        raise PreventUpdate
+    
+    # Extract the button index from the trigger ID
+    import json
+    button_id = json.loads(trigger["prop_id"].split(".")[0])
+    index = button_id["index"]
+    
+    # Map index to question text
+    questions = {
+        0: "Which stock is better for long-term?",
+        1: "Compare selected stocks",
+        2: "What are the key metrics to consider?",
+    }
+    
+    return questions.get(index, "")
 
 if __name__ == "__main__":
     app.run(debug=True)
