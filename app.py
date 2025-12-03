@@ -8,9 +8,9 @@ from urllib.parse import quote_plus
 import os
 from dash.exceptions import PreventUpdate
 from groq_chatbot import GroqChatbot
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
+# load_dotenv()  # Load .env file if present
 
-load_dotenv()  # Load .env file if present
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 csv_path = os.path.join(BASE_DIR, "master_merged_equity_list.csv")
@@ -669,8 +669,8 @@ app = Dash(__name__)
 server = app.server
 
 # Initialize Groq Chatbot
-# GROQ_API_KEY = "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"
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+# GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 chatbot = GroqChatbot(GROQ_API_KEY)
 
 # Helper to create a stock dropdown (used when user clicks + add button)
