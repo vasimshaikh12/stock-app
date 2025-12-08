@@ -643,23 +643,36 @@ def parse_announcements(html_text, max_items=5):
 # =========================================================
 
 THEME = {
-    "bg": "#f5f5f5",
+    "bg": "#f8f9fc",
     "card_bg": "#ffffff",
-    "primary": "#1167b1",
+    "primary": "#667eea",
+    "primary_dark": "#764ba2",
     "accent": "#0f4c81",
-    "text": "#222222",
-    "muted": "#777777",
-    "border": "#e0e0e0",
+    "text": "#1f2937",
+    "text_light": "#6b7280",
+    "muted": "#9ca3af",
+    "border": "#e5e7eb",
+    "success": "#10b981",
+    "error": "#ef4444",
+    "warning": "#f59e0b",
+    "gradient_primary": "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+    "gradient_success": "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+    "shadow_sm": "0 2px 8px rgba(0, 0, 0, 0.05)",
+    "shadow_md": "0 4px 16px rgba(0, 0, 0, 0.08)",
+    "shadow_lg": "0 8px 32px rgba(0, 0, 0, 0.1)",
 }
 
 def card(children, style=None):
     base_style = {
-        "backgroundColor": THEME["card_bg"],
-        "border": f"1px solid {THEME['border']}",
-        "borderRadius": "8px",
-        "padding": "16px",
-        "marginBottom": "20px",
-        "boxShadow": "0 2px 6px rgba(0,0,0,0.03)",
+        "backgroundColor": "rgba(255, 255, 255, 0.95)",
+        "backdropFilter": "blur(10px)",
+        "WebkitBackdropFilter": "blur(10px)",
+        "border": "1px solid rgba(255, 255, 255, 0.8)",
+        "borderRadius": "16px",
+        "padding": "24px",
+        "marginBottom": "24px",
+        "boxShadow": THEME["shadow_lg"] + ", " + THEME["shadow_sm"],
+        "transition": "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
     }
     if style:
         base_style.update(style)
@@ -685,6 +698,8 @@ def make_stock_dropdown(index):
             "padding": "4px",
             "marginRight": "10px",
             "marginBottom": "8px",
+            "position": "relative",
+            "zIndex": "9999",
         },
         children=[
             dcc.Dropdown(
@@ -695,6 +710,7 @@ def make_stock_dropdown(index):
                 style={
                     "width": "400px",
                     "border": "none",
+                    "zIndex": "10000",
                 },
             ),
             html.Button(
@@ -900,38 +916,54 @@ else:
 
 app.layout = html.Div(
     style={
-        "backgroundColor": THEME["bg"],
+        "background": THEME["gradient_primary"],
         "minHeight": "100vh",
         "padding": "0",
-        "fontFamily": "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        "fontFamily": "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        "position": "relative",
     },
     children=[
         # Top bar
         html.Div(
             style={
-                "backgroundColor": THEME["primary"],
+                "background": THEME["gradient_primary"],
                 "color": "white",
-                "padding": "12px 32px",
+                "padding": "16px 32px",
                 "display": "flex",
                 "alignItems": "center",
                 "justifyContent": "space-between",
+                "boxShadow": "0 4px 20px rgba(0, 0, 0, 0.15)",
             },
             children=[
                 html.Div(
                     [
                         html.Span(
-                            "Screener Fundamental & Financials Dashboard",
-                            style={"fontSize": "22px", "fontWeight": "600"},
+                            "📊 Screener Fundamental & Financials Dashboard",
+                            style={
+                                "fontSize": "24px",
+                                "fontWeight": "700",
+                                "fontFamily": "'Poppins', sans-serif",
+                                "letterSpacing": "-0.5px",
+                                "textShadow": "0 2px 8px rgba(0, 0, 0, 0.2)",
+                            },
                         ),
                         html.Span(
                             "  · fundamentals, P&L, Balance Sheet, Cash Flow, Shareholding, Announcements",
-                            style={"fontSize": "13px", "color": "#dfe8f5", "marginLeft": "8px"},
+                            style={
+                                "fontSize": "13px",
+                                "color": "rgba(255, 255, 255, 0.9)",
+                                "marginLeft": "8px",
+                            },
                         ),
                     ]
                 ),
                 html.Span(
-                    f"v2.1 | Loaded {len(dropdown_options)} stocks",
-                    style={"fontSize": "12px", "opacity": 0.8},
+                    f"v2.1 | {len(dropdown_options)} stocks loaded",
+                    style={
+                        "fontSize": "12px",
+                        "opacity": 0.9,
+                        "fontWeight": "500",
+                    },
                 ),
             ],
         ),
@@ -948,11 +980,17 @@ app.layout = html.Div(
                                 "flexWrap": "wrap",
                                 "alignItems": "center",
                                 "gap": "10px",
+                                "position": "relative",
+                                "zIndex": "9998",
                             },
                             children=[
                                 html.Div(
                                     id="stock-dropdowns-wrapper",
-                                    style={"display": "contents"},
+                                    style={
+                                        "display": "contents",
+                                        "position": "relative",
+                                        "zIndex": "9998",
+                                    },
                                     children=[make_stock_dropdown(0)],
                                 ),
                                 html.Button(
@@ -997,7 +1035,7 @@ app.layout = html.Div(
                 card(
                     children=[
                         html.Div(
-                            "Profit & Loss (from )",
+                            "Profit & Loss",
                             style={"fontWeight": "600", "marginBottom": "4px", "fontSize": "16px"},
                         ),
                         html.Div(
@@ -1015,7 +1053,7 @@ app.layout = html.Div(
                 card(
                     children=[
                         html.Div(
-                            "Balance Sheet (from )",
+                            "Balance Sheet",
                             style={"fontWeight": "600", "marginBottom": "4px", "fontSize": "16px"},
                         ),
                         html.Div(
@@ -1033,7 +1071,7 @@ app.layout = html.Div(
                 card(
                     children=[
                         html.Div(
-                            "Cash Flows (from )",
+                            "Cash Flows",
                             style={"fontWeight": "600", "marginBottom": "4px", "fontSize": "16px"},
                         ),
                         html.Div(
@@ -1051,7 +1089,7 @@ app.layout = html.Div(
                 card(
                     children=[
                         html.Div(
-                            "Shareholding Pattern (from )",
+                            "Shareholding Pattern",
                             style={"fontWeight": "600", "marginBottom": "4px", "fontSize": "16px"},
                         ),
                         html.Div(
@@ -1319,10 +1357,13 @@ app.layout = html.Div(
 
 def df_to_dash_table(df, max_cols=None):
     if df is None or df.empty:
-        return html.Div("No data available.")
+        return html.Div("No data available.", style={"color": THEME["muted"], "fontStyle": "italic"})
 
     if max_cols is not None and df.shape[1] > max_cols:
-        df = df.iloc[:, :max_cols]
+        # Take the first column (labels) + the last (max_cols-1) columns (most recent data)
+        first_col = df.iloc[:, [0]]
+        last_cols = df.iloc[:, -(max_cols-1):]
+        df = pd.concat([first_col, last_cols], axis=1)
 
     df = df.copy().fillna("")
     headers = list(df.columns)
@@ -1331,8 +1372,11 @@ def df_to_dash_table(df, max_cols=None):
     return html.Table(
         style={
             "width": "100%",
-            "borderCollapse": "collapse",
-            "fontSize": "13px",
+            "borderCollapse": "separate",
+            "borderSpacing": "0",
+            "fontSize": "14px",
+            "overflow": "hidden",
+            "borderRadius": "12px",
         },
         children=[
             html.Thead(
@@ -1341,14 +1385,19 @@ def df_to_dash_table(df, max_cols=None):
                         html.Th(
                             h,
                             style={
-                                "borderBottom": f"2px solid {THEME['border']}",
-                                "textAlign": "left",
-                                "padding": "6px 8px",
-                                "backgroundColor": "#f2f6fb",
+                                "background": THEME["gradient_primary"],
+                                "color": "white",
                                 "fontWeight": "600",
+                                "textAlign": "left",
+                                "padding": "10px 12px",
+                                "fontSize": "12px",
+                                "letterSpacing": "0.3px",
+                                "textTransform": "uppercase",
+                                **({"borderTopLeftRadius": "12px"} if i == 0 else {}),
+                                **({"borderTopRightRadius": "12px"} if i == len(headers) - 1 else {}),
                             },
                         )
-                        for h in headers
+                        for i, h in enumerate(headers)
                     ]
                 )
             ),
@@ -1359,14 +1408,18 @@ def df_to_dash_table(df, max_cols=None):
                             html.Td(
                                 str(cell),
                                 style={
-                                    "borderBottom": f"1px solid {THEME['border']}",
-                                    "padding": "5px 8px",
+                                    "padding": "8px 12px",
+                                    "borderBottom": "1px solid rgba(0, 0, 0, 0.05)",
                                 },
                             )
                             for cell in row
-                        ]
-                    )
-                    for row in rows
+                        ],
+                        style={
+                            "backgroundColor": "white" if idx % 2 == 0 else "rgba(102, 126, 234, 0.03)",
+                            "transition": "all 0.2s ease",
+                        },
+                        )
+                    for idx, row in enumerate(rows)
                 ]
             ),
         ],
@@ -1515,7 +1568,7 @@ def update_dashboard(selected_dropdown_values):
             html.Div(
                 [
                     html.H4(name, style={"marginTop": "12px", "marginBottom": "6px"}),
-                    df_to_dash_table(pl_df, max_cols=10),
+                    df_to_dash_table(pl_df, max_cols=4),
                 ]
             )
         )
@@ -1524,7 +1577,7 @@ def update_dashboard(selected_dropdown_values):
             html.Div(
                 [
                     html.H4(name, style={"marginTop": "12px", "marginBottom": "6px"}),
-                    df_to_dash_table(bs_df, max_cols=10),
+                    df_to_dash_table(bs_df, max_cols=4),
                 ]
             )
         )
@@ -1533,7 +1586,7 @@ def update_dashboard(selected_dropdown_values):
             html.Div(
                 [
                     html.H4(name, style={"marginTop": "12px", "marginBottom": "6px"}),
-                    df_to_dash_table(cf_df, max_cols=10),
+                    df_to_dash_table(cf_df, max_cols=4),
                 ]
             )
         )
@@ -1542,7 +1595,7 @@ def update_dashboard(selected_dropdown_values):
             html.Div(
                 [
                     html.H4(name, style={"marginTop": "12px", "marginBottom": "6px"}),
-                    df_to_dash_table(shp_df, max_cols=10),
+                    df_to_dash_table(shp_df, max_cols=4),
                 ]
             )
         )
